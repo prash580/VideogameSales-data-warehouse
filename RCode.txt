@@ -1,0 +1,115 @@
+install.packages('twitteR')
+install.packages('httr')
+install.packages('ROAuth')
+install.packages('plyr')
+#these are various libraries that we use throughout this example
+library(plyr)
+library(httr)
+library(doBy)
+#library(Quandl)
+library(twitteR)
+
+#here mz api keys would go, to run this example zou need to input you keys, and secrets
+api_key <- "lR65Lqo6SnhoNaukbPmPTmYD9"
+api_secret <- "wBsvH4de70HXedOFcwUDVqe8QPPJSXcs42soGjn6IopqMnUr1Q"
+access_token <- "1395197036-sxSsK6F0eZR3JoUAc4ZxgJSR5JHvgX2UUrOprLw"
+access_token_secret <- "4LbYo6bJ2hwPwht9dx4AHdTlF9iifoVLHr1T7bXgdn9pT"
+
+#here we setup up twitter and provide authentication details, i.e. the keys and their secrets
+setup_twitter_oauth(api_key,api_secret,access_token,access_token_secret)
+
+#here we read in the two dictionaries that have been downloaded - 
+hu.liu.pos = scan('/Users/NCI_DW&BI_4GB/Downloads/positive-words.txt', what='character', comment.char=';')
+hu.liu.neg = scan('/Users/NCI_DW&BI_4GB/Downloads/negative-words.txt', what='character', comment.char=';')
+
+#now we can add some domain-specific terminolgy
+pos.words = c(hu.liu.pos, 'upgrade','ultimate','graphics')
+neg.words = c(hu.liu.neg, 'wtf', 'fail', 'low', 'glitch')
+
+#our first function
+score.sentence <- function(sentence, pos.words, neg.words) {
+  #here some basic cleaning
+  sentence = gsub('[[:punct:]]', '', sentence)
+  sentence = gsub('[[:cntrl::]]', '', sentence)
+  sentence = gsub('\\d+', '', sentence)
+  sentence = tolower(sentence)
+  
+  #basic data structure construction
+  word.list = str_split(sentence, '\\s+')
+  words = unlist(word.list)
+  
+  #here we count the number of words that are positive and negative
+  pos.matches = match(words, pos.words)
+  neg.matches = match(words, neg.words)
+  
+  #throw away those that didn't match
+  pos.matches = !is.na(pos.matches)
+  neg.matches = !is.na(neg.matches)
+  
+  #compute the sentiment score
+  score = sum(pos.matches) - sum(neg.matches)
+  
+  return(score)
+}
+
+#our second function that takes an array of sentences and sentiment analyses them
+score.sentiment <- function(sentences, pos.words, neg.words) {
+  require(plyr)
+  require(stringr)
+  
+  #here any sentence/tweet that causes an error is given a sentiment score of 0 (neutral)
+  scores = laply(sentences, function(sentence, pos.words, neg.words) {
+    tryCatch(score.sentence(sentence, pos.words, neg.words ), error=function(e) 0)
+  }, pos.words, neg.words)
+  
+  #now we construct a data frame
+  scores.df = data.frame(score=scores, text=sentences)
+  
+  return(scores.df)
+}
+
+#our third function, that communicates with twitter and then scores each of the tweets returned
+collect.and.score <- function (handle, code, publisher, pos.words, neg.words) {
+  
+  tweets = searchTwitter(handle, n=1500)
+  text = laply(tweets, function(t) t$getText())
+  
+  score = score.sentiment(text, pos.words, neg.words)
+  score$publisher = publisher
+  score$code = code
+  
+  return (score)  
+}
+
+#here we invoke the function above for each of our airlines
+nintendo.scores = collect.and.score("@NintendoAmerica", "NT", "Nintendo", pos.words, neg.words)
+microsoft.scores = collect.and.score("@Xbox", "MS", "Microsoft", pos.words, neg.words)
+activision.scores = collect.and.score("@Activision", "AC", "Activision", pos.words, neg.words)
+ubisoft.scores = collect.and.score("@Ubisoft", "UB", "Ubisoft", pos.words, neg.words)
+taketwo.scores = collect.and.score("@RockstarGames", "RG", "Take-two", pos.words, neg.words)
+sony.scores = collect.and.score("@PlayStation", "SY", "Sony", pos.words, neg.words)
+sega.scores = collect.and.score("@SEGA", "SA", "Sega", pos.words, neg.words)
+electronicarts.scores = collect.and.score("@EA", "EA", "EAGames", pos.words, neg.words)
+
+#We can view any of these data frames using the View function, e.g.: View(delta.scores)
+View(sony.scores)
+
+#we combine all data frames into 1
+all.scores = rbind(nintendo.scores, microsoft.scores, activision.scores, ubisoft.scores, taketwo.scores, sony.scores, sega.scores, electronicarts.scores)
+all.scores
+
+#skim only the most positive or negative tweets to throw away noise near 0
+all.scores$very.pos = as.numeric( all.scores$score >= 2)
+all.scores$very.neg = as.numeric( all.scores$score <= -2)
+
+#now we construct the twitter data frame and simultaneously compute the pos/neg sentiment scores for each airline
+twitter.df = ddply(all.scores, c('publisher', 'code'), summarise, pos.count = sum (very.pos), neg.count = sum(very.neg))
+
+#and here the general sentiment 
+twitter.df$all.count = twitter.df$pos.count + twitter.df$neg.count
+
+#now in order to be able to compare data sets we normalise the sentiment score to be a percentage
+twitter.df$score = round (100 * twitter.df$pos.count / twitter.df$all.count)
+
+#and to help understand our data, order by our now normalised score
+orderBy(~-score, twitter.df)
